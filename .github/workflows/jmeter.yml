@@ -1,0 +1,83 @@
+name: JMeter samples
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  JMETER_VERSION: "5.6.3"
+
+jobs:
+  run-sample:
+    name: ${{ matrix.sample }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 2   # be polite to the public demo APIs
+      matrix:
+        sample:
+          - 01_basic_http_get
+          - 02_rest_crud
+          - 03_correlation
+          - 04_csv_parameterisation
+          - 05_think_time_pacing
+          - 06_properties_driven
+          - 07_transactions_groovy
+          - 08_logic_controllers
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Cache JMeter
+        id: cache-jmeter
+        uses: actions/cache@v4
+        with:
+          path: apache-jmeter-${{ env.JMETER_VERSION }}
+          key: jmeter-${{ env.JMETER_VERSION }}
+
+      - name: Download JMeter
+        if: steps.cache-jmeter.outputs.cache-hit != 'true'
+        run: |
+          curl -sSfL -o jmeter.tgz \
+            "https://dlcdn.apache.org/jmeter/binaries/apache-jmeter-${JMETER_VERSION}.tgz" \
+          || curl -sSfL -o jmeter.tgz \
+            "https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-${JMETER_VERSION}.tgz"
+          tar -xzf jmeter.tgz
+
+      - name: Run ${{ matrix.sample }} (non-GUI)
+        run: |
+          mkdir -p results
+          "apache-jmeter-${JMETER_VERSION}/bin/jmeter" -n \
+            -t "samples/${{ matrix.sample }}.jmx" \
+            -Jusers=2 -Jrampup=5 -Jduration=20 \
+            -l "results/${{ matrix.sample }}.jtl" \
+            -j "results/${{ matrix.sample }}.log" \
+            -e -o "results/report"
+
+      - name: Fail on sample errors
+        run: |
+          python3 - <<'PY'
+          import csv, sys
+          path = "results/${{ matrix.sample }}.jtl"
+          rows = list(csv.DictReader(open(path)))
+          errors = [r for r in rows if r["success"] != "true"]
+          print(f"samples={len(rows)} errors={len(errors)}")
+          for r in errors[:20]:
+              print(f"  FAIL {r['label']} code={r['responseCode']} msg={r['failureMessage']}")
+          sys.exit(1 if not rows or errors else 0)
+          PY
+
+      - name: Upload HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-${{ matrix.sample }}
+          path: results/
+          if-no-files-found: warn
